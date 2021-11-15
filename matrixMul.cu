@@ -42,10 +42,10 @@
 
 #define INF INFINITY
 #define BLOCK_SIZE 32
-#define BLOCK_NUM 8
+#define BLOCK_NUM 32
 #define INFP 50
 #define MODE 3   // tropical = 1, else = 2, infskip = 3
-
+#define ADD_MODE 2 //1:min-plus 2:max-plus
 
 //define for switching debug mode
 
@@ -127,7 +127,7 @@ __global__ void MatrixMulCUDA(float* C, float* A, float* B, int wA, int wB) {
     C[c + wB * ty + tx] = Csub;
 }
 
-__global__ void MatrixMulTropCUDA(float* C, float* A, float* B, int wA, int wB) {
+__global__ void MinPlusTrop(float* C, float* A, float* B, int wA, int wB) {
     // Block index
     int bx = blockIdx.x;
     int by = blockIdx.y;
@@ -196,7 +196,7 @@ __global__ void MatrixMulTropCUDA(float* C, float* A, float* B, int wA, int wB) 
     C[c + wB * ty + tx] = Csub;
 }
 
-__global__ void MatrixMulTropInfskip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB ,int* skipcounter) {
+__global__ void MinPlusTropSkip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB ,int* skipcounter) {
     // Block index
     int bx = blockIdx.x;
     int by = blockIdx.y;
@@ -275,6 +275,175 @@ __global__ void MatrixMulTropInfskip(float* C, float* A, float* B, float* infA, 
 
         for (int k = 0; k < BLOCK_SIZE; ++k) {
             Csub = (Csub <= (As[ty][k] + Bs[k][tx]) ? Csub : As[ty][k] + Bs[k][tx]);
+        }
+
+        // Synchronize to make sure that the preceding
+        // computation is done before loading two new
+        // sub-matrices of A and B in the next iteration
+        __syncthreads();
+    }
+
+    // Write the blocsub-matrix to device memory;
+    // each thread writes one element
+    int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
+    C[c + indexConstB] = Csub;
+}
+
+__global__ void MaxPlusTrop(float* C, float* A, float* B, int wA, int wB) {
+    // Block index
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    // Thread index
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    // Index of the first sub-matrix of A processed by the block
+    int aBegin = wA * BLOCK_SIZE * by;
+
+    // Index of the last sub-matrix of A processed by the block
+    int aEnd = aBegin + wA - 1;
+
+    // Step size used to iterate through the sub-matrices of A
+    int aStep = BLOCK_SIZE;
+
+    // Index of the first sub-matrix of B processed by the block
+    int bBegin = BLOCK_SIZE * bx;
+
+    // Step size used to iterate through the sub-matrices of B
+    int bStep = BLOCK_SIZE * wB;
+
+    // Csub is used to store the element of the block sub-matrix
+    // that is computed by the thread
+    float Csub = 0;
+
+    // Loop over all the sub-matrices of A and B
+    // required to compute the block sub-matrix
+    for (int a = aBegin, b = bBegin; a <= aEnd; a += aStep, b += bStep) {
+        // Declaration of the shared memory array As used to
+        // store the sub-matrix of A
+        __shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
+
+        // Declaration of the shared memory array Bs used to
+        // store the sub-matrix of B
+        __shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
+
+        // Load the matrices from device memory
+        // to shared memory; each thread loads
+        // one element of each matrix
+        As[ty][tx] = A[a + wA * ty + tx];
+        Bs[ty][tx] = B[b + wB * ty + tx];
+
+        // Synchronize to make sure the matrices are loaded
+        __syncthreads();
+
+        // Multiply the two matrices together;
+        // each thread computes one element
+        // of the block sub-matrix
+#pragma unroll
+
+        for (int k = 0; k < BLOCK_SIZE; ++k) {
+            Csub = (Csub >= (As[ty][k] + Bs[k][tx]) ? Csub : As[ty][k] + Bs[k][tx]);
+        }
+
+        // Synchronize to make sure that the preceding
+        // computation is done before loading two new
+        // sub-matrices of A and B in the next iteration
+        __syncthreads();
+    }
+
+    // Write the blocsub-matrix to device memory;
+    // each thread writes one element
+    int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
+    C[c + wB * ty + tx] = Csub;
+}
+
+__global__ void MaxPlusTropSkip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB, int* skipcounter) {
+    // Block index
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    // Thread index
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    // Index of the first sub-matrix of A processed by the block
+    int aBegin = wA * BLOCK_SIZE * by;
+
+    // Index of the last sub-matrix of A processed by the block
+    int aEnd = aBegin + wA - 1;
+
+    // Step size used to iterate through the sub-matrices of A
+    int aStep = BLOCK_SIZE;
+
+    // Index of the first sub-matrix of B processed by the block
+    int bBegin = BLOCK_SIZE * bx;
+
+    // Step size used to iterate through the sub-matrices of B
+    int bStep = BLOCK_SIZE * wB;
+
+    // Csub is used to store the element of the block sub-matrix
+    // that is computed by the thread
+    float Csub = INF;
+
+    int indexConstA = wA * ty + tx;
+    int indexConstB = wB * ty + tx;
+
+    int infIndexConstA = (wA / BLOCK_SIZE) * by;
+    int infIndexConstB = wB / BLOCK_SIZE;
+    
+
+    //skip execution
+    for (int infIndexA = infIndexConstA, infIndexB =bx; infIndexA < infIndexConstA + (wA / BLOCK_SIZE); infIndexA++, infIndexB += infIndexConstB) {
+        if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
+            int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
+            C[c + indexConstB] = INF;
+
+
+#ifdef DEBUG_COUNT
+
+            if (tx == 0 && ty == 0) {
+                atomicAdd(&skipcounter[1], 1);
+                if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
+                    atomicAdd(&skipcounter[0], 1);
+                }
+            }
+
+#endif
+
+
+            return;
+        }
+    }
+
+    // Loop over all the sub-matrices of A and B
+    // required to compute the block sub-matrix
+    for (int a = aBegin, b = bBegin, infIndexA = infIndexConstA, infIndexB = bx; a <= aEnd; a += aStep, b += bStep, infIndexA++, infIndexB += infIndexConstB) {
+
+        // Declaration of the shared memory array As used to
+        // store the sub-matrix of A
+        __shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
+
+        // Declaration of the shared memory array Bs used to
+        // store the sub-matrix of B
+        __shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
+
+        // Load the matrices from device memory
+        // to shared memory; each thread loads
+        // one element of each matrix
+        As[ty][tx] = A[a + indexConstA];
+        Bs[ty][tx] = B[b + indexConstB];
+
+        // Synchronize to make sure the matrices are loaded
+        __syncthreads();
+
+        // Multiply the two matrices together;
+        // each thread computes one element
+        // of the block sub-matrix
+#pragma unroll
+
+        for (int k = 0; k < BLOCK_SIZE; ++k) {
+            Csub = (Csub >= (As[ty][k] + Bs[k][tx]) ? Csub : As[ty][k] + Bs[k][tx]);
         }
 
         // Synchronize to make sure that the preceding
@@ -416,7 +585,7 @@ void SetFileData(float* data, int size) {
  * Run a simple test of matrix multiplication using CUDA
  */
 int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
-    const dim3& dimsB, std::ofstream& writing_file, int mode) {
+    const dim3& dimsB, std::ofstream& writing_file, int mode, int addmode) {
   // Allocate host memory for matrices A and B
   unsigned int size_A = dimsA.x * dimsA.y;
   unsigned int mem_size_A = sizeof(float) * size_A;
@@ -522,27 +691,57 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
 
   //printf("mode : %d \n", mode);
 
-  if (mode == 1) {
-      checkCudaErrors(cudaEventRecord(startA, stream));
-      for (int j = 0; j < nIter; j++) {
-              MatrixMulTropCUDA
+  
+  if (addmode == 1) {
+      if (mode == 1) {
+          checkCudaErrors(cudaEventRecord(startA, stream));
+          for (int j = 0; j < nIter; j++) {
+              MinPlusTrop
                   << <grid, block, 0, stream >> > (d_C, d_A, d_B, dimsA.x, dimsB.x);
+          }
       }
-  } else if(mode == 2) {
-      checkCudaErrors(cudaEventRecord(startA, stream));
-      for (int j = 0; j < nIter; j++) {
+      else if (mode == 2) {
+          checkCudaErrors(cudaEventRecord(startA, stream));
+          for (int j = 0; j < nIter; j++) {
               MatrixMulCUDA
                   << <grid, block, 0, stream >> > (d_C, d_A, d_B, dimsA.x, dimsB.x);
+          }
+      }
+      else if (mode == 3) {
+          checkCudaErrors(cudaEventRecord(startA, stream));
+          for (int j = 0; j < nIter; j++) {
+              InfCheck
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
+              checkCudaErrors(cudaDeviceSynchronize());
+              MinPlusTropSkip
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
+          }
       }
   }
-  else if(mode == 3){
-      checkCudaErrors(cudaEventRecord(startA, stream));
-      for (int j = 0; j < nIter; j++) {
-          InfCheck
-              << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
-          checkCudaErrors(cudaDeviceSynchronize());
-          MatrixMulTropInfskip
-             << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
+  else {
+      if (mode == 1) {
+          checkCudaErrors(cudaEventRecord(startA, stream));
+          for (int j = 0; j < nIter; j++) {
+              MaxPlusTrop
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, dimsA.x, dimsB.x);
+          }
+      }
+      else if (mode == 2) {
+          checkCudaErrors(cudaEventRecord(startA, stream));
+          for (int j = 0; j < nIter; j++) {
+              MatrixMulCUDA
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, dimsA.x, dimsB.x);
+          }
+      }
+      else if (mode == 3) {
+          checkCudaErrors(cudaEventRecord(startA, stream));
+          for (int j = 0; j < nIter; j++) {
+              InfCheck
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
+              checkCudaErrors(cudaDeviceSynchronize());
+              MaxPlusTropSkip
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
+          }
       }
   }
 
@@ -777,7 +976,7 @@ int main(int argc, char **argv) {
       printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
           dimsB.y);
       for (int i = 0; i <= avg_count; i++) {
-          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3);
+          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3, ADD_MODE);
       }
       writing_file << "\n";
   }
@@ -795,7 +994,7 @@ int main(int argc, char **argv) {
   dimsB.y = size;
   printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
       dimsB.y);
-  matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3);
+  matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, ADD_MODE);
   exit(matrix_result);
 
 #else
@@ -811,7 +1010,7 @@ int main(int argc, char **argv) {
       printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
           dimsB.y);
       for (int i = 0; i <= avg_count; i++) {
-          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 1);
+          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 1, ADD_MODE);
       }
       writing_file << "\n";
   }
@@ -829,7 +1028,7 @@ int main(int argc, char **argv) {
       printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
           dimsB.y);
       for (int i = 0; i <= avg_count; i++) {
-          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3);
+          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3, ADD_MODE);
       }
       writing_file << "\n";
   }
