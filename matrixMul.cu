@@ -42,9 +42,16 @@
 
 #define INF INFINITY
 #define BLOCK_SIZE 32
-#define BLOCK_NUM 16
+#define BLOCK_NUM 8
 #define INFP 50
 #define MODE 3   // tropical = 1, else = 2, infskip = 3
+
+
+//define for switching debug mode
+
+//#define DEBUG_COUNT
+#define SINGLE
+
 
 /**
  * Matrix multiplication (CUDA Kernel) on the device: C = A * B
@@ -228,7 +235,8 @@ __global__ void MatrixMulTropInfskip(float* C, float* A, float* B, float* infA, 
     for (int a = aBegin, b = bBegin, infIndexA = infIndexConstA, infIndexB = bx; a <= aEnd; a += aStep, b += bStep, infIndexA++, infIndexB += infIndexConstB) {
 
 
-        //for debug
+#ifdef DEBUG_COUNT
+
         if (tx == 0 && ty == 0) {
             atomicAdd(&skipcounter[1], 1);
             if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
@@ -236,6 +244,7 @@ __global__ void MatrixMulTropInfskip(float* C, float* A, float* B, float* infA, 
             }
         }
 
+#endif
 
         //skip execution
         if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
@@ -579,12 +588,23 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
 
 
   //file output
+
+#ifdef DEBUG_COUNT
+
+  writing_file << "," + std::to_string(skipcounter[0] / nIter);
+
+#else
+
   writing_file << "," + std::to_string(gigaFlops);
 
-  //for debug
-  if (skipcounter[1] != 0) {
-      printf("skipcount = %d / %d\n\n", skipcounter[0] / nIter, skipcounter[1] / nIter);
+#endif
+
+#ifdef DEBUG_COUNT
+  if(mode == 3){
+          printf("skipcount = %d / %d\n\n", skipcounter[0] / nIter, skipcounter[1] / nIter);
   }
+
+#endif
 
   /*
   printf("Checking computed result for correctness: ");
@@ -689,7 +709,7 @@ int main(int argc, char **argv) {
       if (dev.computeMode == cudaComputeModeDefault) printf("default mode (multiple threads can use) \n");
       else if (dev.computeMode == cudaComputeModeExclusive) printf("exclusive mode (only one thread will be able to use)\n");
       else if (dev.computeMode == cudaComputeModeProhibited) printf("prohibited mode (no threads can use)\n");
-
+     
   }*/
 
   // This will pick the best possible CUDA capable device, otherwise
@@ -739,32 +759,81 @@ int main(int argc, char **argv) {
 
   int matrix_result = 0;
 
-  int max_size = 16384;
+  int max_size = 8192;
   
-  writing_file << "noskip";
+  int avg_count = 10;
+
+#ifdef DEBUG_COUNT
+
+  printf("\n\nskipcount\n");
+
+
   for (int size = block_size; size <= max_size; size *= 2) {
+      writing_file << "skip-" + std::to_string(size);
       dimsA.x = size;
       dimsA.y = size;
       dimsB.x = size;
       dimsB.y = size;
       printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
           dimsB.y);
-      matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 1);
+      for (int i = 0; i <= avg_count; i++) {
+          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3);
+      }
+      writing_file << "\n";
   }
-  writing_file << "\n";
-  
-
-  writing_file << "skip";
-  for (int size = block_size; size <= max_size; size *= 2) {
-      dimsA.x = size;
-      dimsA.y = size;
-      dimsB.x = size;
-      dimsB.y = size;
-      printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
-          dimsB.y);
-      matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3);
-  }
-  writing_file << "\n";
-
   exit(matrix_result);
+#endif
+
+
+
+#ifdef SINGLE
+
+  int size = block_size * block_num;
+  dimsA.x = size;
+  dimsA.y = size;
+  dimsB.x = size;
+  dimsB.y = size;
+  printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
+      dimsB.y);
+  matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3);
+  exit(matrix_result);
+
+#else
+
+  printf("noskip\n");
+
+  for (int size = block_size; size <= max_size; size *= 2) {
+      writing_file << "noskip-" + std::to_string(size);
+      dimsA.x = size;
+      dimsA.y = size;
+      dimsB.x = size;
+      dimsB.y = size;
+      printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
+          dimsB.y);
+      for (int i = 0; i <= avg_count; i++) {
+          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 1);
+      }
+      writing_file << "\n";
+  }
+  
+
+  printf("\n\nskip\n");
+
+
+  for (int size = block_size; size <= max_size; size *= 2) {
+      writing_file << "skip-" + std::to_string(size);
+      dimsA.x = size;
+      dimsA.y = size;
+      dimsB.x = size;
+      dimsB.y = size;
+      printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
+          dimsB.y);
+      for (int i = 0; i <= avg_count; i++) {
+          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3);
+      }
+      writing_file << "\n";
+  }
+  exit(matrix_result);
+#endif
+
 }
