@@ -42,10 +42,10 @@
 
 #define INF INFINITY
 #define BLOCK_SIZE 32
-#define BLOCK_NUM 32
-#define INFP 50
-#define MODE 3   // tropical = 1, else = 2, infskip = 3
-#define ADD_MODE 2 //1:min-plus 2:max-plus
+#define BLOCK_NUM 256
+#define INFP 0
+#define MODE 1   // tropical = 1, else = 2, infskip = 3
+#define ADD_MODE 1 //1:min-plus 2:max-plus
 
 //define for switching debug mode
 
@@ -708,11 +708,13 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
           }
       }
       else if (mode == 3) {
-          checkCudaErrors(cudaEventRecord(startA, stream));
           for (int j = 0; j < nIter; j++) {
+              checkCudaErrors(cudaEventRecord(startB, stream));
               InfCheck
                   << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
               checkCudaErrors(cudaDeviceSynchronize());
+              checkCudaErrors(cudaEventRecord(stopB, stream));
+              checkCudaErrors(cudaEventRecord(startA, stream));
               MinPlusTropSkip
                   << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
           }
@@ -736,9 +738,12 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
       else if (mode == 3) {
           checkCudaErrors(cudaEventRecord(startA, stream));
           for (int j = 0; j < nIter; j++) {
+              checkCudaErrors(cudaEventRecord(startB, stream));
               InfCheck
                   << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
               checkCudaErrors(cudaDeviceSynchronize());
+              checkCudaErrors(cudaEventRecord(stopB, stream));
+              checkCudaErrors(cudaEventRecord(stopB, stream));
               MaxPlusTropSkip
                   << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
           }
@@ -752,17 +757,16 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   checkCudaErrors(cudaEventSynchronize(stopA));
 
   float msecTotalA = 0.0f;
-  //float msecTotalB = 0.0f;
+  float msecTotalB = 0.0f;
   checkCudaErrors(cudaEventElapsedTime(&msecTotalA, startA, stopA));
 
   float msecTotal = msecTotalA;
 
-  /*
+ 
   if (mode == 3) {
-      checkCudaErrors(cudaEventElapsedTime(&msecTotalA, startA, stopA));
-      msecTotal += msecTotalA;
+      checkCudaErrors(cudaEventElapsedTime(&msecTotalB, startB, stopB));
+      msecTotal += msecTotalB;
   }
-  */
 
   // Compute and print the performance
   float msecPerMatrixMul = (msecTotal) / nIter;
@@ -960,7 +964,7 @@ int main(int argc, char **argv) {
 
   int max_size = 8192;
   
-  int avg_count = 10;
+  int avg_count = 100;
 
 #ifdef DEBUG_COUNT
 
@@ -998,7 +1002,7 @@ int main(int argc, char **argv) {
   exit(matrix_result);
 
 #else
-
+  
   printf("noskip\n");
 
   for (int size = block_size; size <= max_size; size *= 2) {
