@@ -42,16 +42,19 @@
 
 #define INF INFINITY
 #define BLOCK_SIZE 32
-#define BLOCK_NUM 256
-#define INFP 0
-#define MODE 1   // tropical = 1, else = 2, infskip = 3
+#define BLOCK_NUM 4
+#define INFP 25
+#define ZEROP 50
+#define MODE 4   // tropical = 1, else = 2, infskip = 3, zeroskip = 4
 #define ADD_MODE 1 //1:min-plus 2:max-plus
 
 //define for switching debug mode
 
 //#define DEBUG_COUNT
-#define SINGLE
+//#define SINGLE
 
+//zero mode switch
+#define ZEROTILE
 
 /**
  * Matrix multiplication (CUDA Kernel) on the device: C = A * B
@@ -289,6 +292,209 @@ __global__ void MinPlusTropSkip(float* C, float* A, float* B, float* infA, float
     C[c + indexConstB] = Csub;
 }
 
+__global__ void MinPlusTropZeroSkip1(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB, int* skipcounter) {
+    // Block index
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    // Thread index
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    // Index of the first sub-matrix of A processed by the block
+    int aBegin = wA * BLOCK_SIZE * by;
+
+    // Index of the last sub-matrix of A processed by the block
+    int aEnd = aBegin + wA - 1;
+
+    // Step size used to iterate through the sub-matrices of A
+    int aStep = BLOCK_SIZE;
+
+    // Index of the first sub-matrix of B processed by the block
+    int bBegin = BLOCK_SIZE * bx;
+
+    // Step size used to iterate through the sub-matrices of B
+    int bStep = BLOCK_SIZE * wB;
+
+    // Csub is used to store the element of the block sub-matrix
+    // that is computed by the thread
+    float Csub = INF;
+
+    int indexConstA = wA * ty + tx;
+    int indexConstB = wB * ty + tx;
+
+    int infIndexConstA = (wA / BLOCK_SIZE) * by;
+    int infIndexConstB = wB / BLOCK_SIZE;
+
+    // Loop over all the sub-matrices of A and B
+    // required to compute the block sub-matrix
+    for (int a = aBegin, b = bBegin, infIndexA = infIndexConstA, infIndexB = bx; a <= aEnd; a += aStep, b += bStep, infIndexA++, infIndexB += infIndexConstB) {
+
+
+#ifdef DEBUG_COUNT
+
+        if (tx == 0 && ty == 0) {
+            atomicAdd(&skipcounter[1], 1);
+            if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
+                atomicAdd(&skipcounter[0], 1);
+            }
+        }
+
+#endif
+
+        //skip execution
+        if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
+            continue;
+        }
+
+        // Declaration of the shared memory array As used to
+        // store the sub-matrix of A
+        __shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
+
+        // Declaration of the shared memory array Bs used to
+        // store the sub-matrix of B
+        __shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
+
+        // Load the matrices from device memory
+        // to shared memory; each thread loads
+        // one element of each matrix
+        As[ty][tx] = A[a + indexConstA];
+        Bs[ty][tx] = B[b + indexConstB];
+
+        // Synchronize to make sure the matrices are loaded
+        __syncthreads();
+
+        // Multiply the two matrices together;
+        // each thread computes one element
+        // of the block sub-matrix
+#pragma unroll
+
+        for (int k = 0; k < BLOCK_SIZE; ++k) {
+            if (Csub >= (As[ty][k] + Bs[k][tx])) {
+                Csub = As[ty][k] + Bs[k][tx];
+                    if (Csub == 0) {
+                        break;
+                    }
+            }
+        }
+
+        // Synchronize to make sure that the preceding
+        // computation is done before loading two new
+        // sub-matrices of A and B in the next iteration
+        __syncthreads();
+    }
+
+    // Write the blocsub-matrix to device memory;
+    // each thread writes one element
+    int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
+    C[c + indexConstB] = Csub;
+
+}
+
+__global__ void MinPlusTropZeroSkip2(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB, int* skipcounter) {
+    // Block index
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    // Thread index
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    // Index of the first sub-matrix of A processed by the block
+    int aBegin = wA * BLOCK_SIZE * by;
+
+    // Index of the last sub-matrix of A processed by the block
+    int aEnd = aBegin + wA - 1;
+
+    // Step size used to iterate through the sub-matrices of A
+    int aStep = BLOCK_SIZE;
+
+    // Index of the first sub-matrix of B processed by the block
+    int bBegin = BLOCK_SIZE * bx;
+
+    // Step size used to iterate through the sub-matrices of B
+    int bStep = BLOCK_SIZE * wB;
+
+    // Csub is used to store the element of the block sub-matrix
+    // that is computed by the thread
+    float Csub = INF;
+
+    int indexConstA = wA * ty + tx;
+    int indexConstB = wB * ty + tx;
+
+    int infIndexConstA = (wA / BLOCK_SIZE) * by;
+    int infIndexConstB = wB / BLOCK_SIZE;
+
+    // Loop over all the sub-matrices of A and B
+    // required to compute the block sub-matrix
+    for (int a = aBegin, b = bBegin, infIndexA = infIndexConstA, infIndexB = bx; a <= aEnd; a += aStep, b += bStep, infIndexA++, infIndexB += infIndexConstB) {
+
+
+#ifdef DEBUG_COUNT
+
+        if (tx == 0 && ty == 0) {
+            atomicAdd(&skipcounter[1], 1);
+            if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
+                atomicAdd(&skipcounter[0], 1);
+            }
+        }
+
+#endif
+
+        //skip execution
+        if ((infA[infIndexA] == 1) || (infB[infIndexB] == 1)) {
+            continue;
+        }
+
+        if ((infA[infIndexA] == -1) && (infB[infIndexB] == -1)) {
+            Csub = 0;
+            break;
+        }
+
+        // Declaration of the shared memory array As used to
+        // store the sub-matrix of A
+        __shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
+
+        // Declaration of the shared memory array Bs used to
+        // store the sub-matrix of B
+        __shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
+
+        // Load the matrices from device memory
+        // to shared memory; each thread loads
+        // one element of each matrix
+        As[ty][tx] = A[a + indexConstA];
+        Bs[ty][tx] = B[b + indexConstB];
+
+        // Synchronize to make sure the matrices are loaded
+        __syncthreads();
+
+        // Multiply the two matrices together;
+        // each thread computes one element
+        // of the block sub-matrix
+#pragma unroll
+
+        for (int k = 0; k < BLOCK_SIZE; ++k) {
+            if (Csub >= (As[ty][k] + Bs[k][tx])) {
+                Csub = As[ty][k] + Bs[k][tx];
+                if (Csub == 0) {
+                    break;
+                }
+            }
+        }
+
+        // Synchronize to make sure that the preceding
+        // computation is done before loading two new
+        // sub-matrices of A and B in the next iteration
+        __syncthreads();
+    }
+
+    // Write the blocsub-matrix to device memory;
+    // each thread writes one element
+    int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
+    C[c + indexConstB] = Csub;
+
+}
+
 __global__ void MaxPlusTrop(float* C, float* A, float* B, int wA, int wB) {
     // Block index
     int bx = blockIdx.x;
@@ -481,9 +687,11 @@ __global__ void InfCheck(float* C, float* A, float* B, float* infA, float* infB,
 
     __syncthreads();
 
+
     if (isinf(A[aBegin + tx + ty * wA]) == 0) {
         infcheckA = 1;
     }
+
     if (isinf(B[bBegin + tx + ty * wB]) == 0) {
         infcheckB = 1;
     }
@@ -491,11 +699,55 @@ __global__ void InfCheck(float* C, float* A, float* B, float* infA, float* infB,
     __syncthreads();
     
     if (tx == 0 && ty == 0) {
-        if (infcheckA == 1) {
-            infA[bx + (wA / BLOCK_SIZE) * by] = 0;
+        if (infcheckA == 0) {
+            infA[bx + (wA / BLOCK_SIZE) * by] = 1;
         }
-        if (infcheckB == 1) {
-            infB[bx + (wB / BLOCK_SIZE) * by] = 0;
+        if (infcheckB == 0) {
+            infB[bx + (wB / BLOCK_SIZE) * by] = 1;
+        }
+    }
+}
+
+__global__ void ZeroCheck(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB) {
+    // Block index
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    // Thread index
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    // Index of the first sub-matrix of A processed by the block
+    int aBegin = wA * BLOCK_SIZE * by;
+
+    // Index of the first sub-matrix of A processed by the block
+    int bBegin = wB * BLOCK_SIZE * by;
+
+    __shared__ int zerocheckA;
+    __shared__ int zerocheckB;
+
+    zerocheckA = 0;
+    zerocheckB = 0;
+
+    __syncthreads();
+
+
+    if (A[aBegin + tx + ty * wA] != 0) {
+        zerocheckA = 1;
+    }
+
+    if (B[bBegin + tx + ty * wB] != 0) {
+        zerocheckB = 1;
+    }
+
+    __syncthreads();
+
+    if (tx == 0 && ty == 0) {
+        if (zerocheckA == 0) {
+            infA[bx + (wA / BLOCK_SIZE) * by] = -1;
+        }
+        if (zerocheckB == 0) {
+            infB[bx + (wB / BLOCK_SIZE) * by] = -1;
         }
     }
 }
@@ -509,34 +761,58 @@ void ConstantInit(float *data, int size, float val) {
 
 
 
-void ConstantInitRand(float* data, int p, const dim3& size) {
+void ConstantInitRand(float* data, int p, int pz, const dim3& size) {
     std::random_device rnd;
     std::mt19937 mt(rnd());
     std::uniform_int_distribution<> rand100(1, 100);
-   float i = 1;
    int infcount = 0;
    int count = 0;
    for (int y = 0; y < size.y / BLOCK_SIZE; y++) {
        for (int x = 0; x < size.x / BLOCK_SIZE; x++) {
            count++;
            if (rand100(rnd) < p) {
-               i = INF;
+               for (int sy = 0; sy < BLOCK_SIZE; sy++) {
+                   for (int sx = 0; sx < BLOCK_SIZE; sx++) {
+                       data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = INF;
+                   }
+               }
                infcount++;
            }
            else {
-               i = 1;
-           }
-           for (int sy = 0; sy < BLOCK_SIZE; sy++) {
-               for (int sx = 0; sx < BLOCK_SIZE; sx++) {
-                   data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = i;
+#ifdef ZEROTILE
+               if (rand100(rnd) < pz) {
+                   for (int sy = 0; sy < BLOCK_SIZE; sy++) {
+                       for (int sx = 0; sx < BLOCK_SIZE; sx++) {
+                           data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = 0;
+                       }
+                   }
                }
+               else {
+                   for (int sy = 0; sy < BLOCK_SIZE; sy++) {
+                       for (int sx = 0; sx < BLOCK_SIZE; sx++) {
+                           data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = 1;
+                       }
+                   }
+               }
+#else
+               for (int sy = 0; sy < BLOCK_SIZE; sy++) {
+                   for (int sx = 0; sx < BLOCK_SIZE; sx++) {
+                       if (rand100(rnd) < pz) {
+                           data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = 0;
+                       }
+                       else {
+                           data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = 1;
+                       }
+                   }
+               }
+#endif
            }
        }
    }
 
-   printf("inf percentage : %d / %d\n", infcount, count);
+   //printf("inf percentage : %d / %d\n", infcount, count);
 
-    /* for debug
+   /* print data
     int ex;
     for (int a = 0; a < size.y; a++) {
         for (int b = 0; b < size.x; b++) {
@@ -546,7 +822,6 @@ void ConstantInitRand(float* data, int p, const dim3& size) {
         printf("\n");
     }
     */
-
 }
 
 
@@ -617,15 +892,16 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   */
 
   int InfP = INFP;  //set inf percentage
+  int ZeroP = ZEROP;
   
-  printf("set data of matrix A");
-  ConstantInitRand(h_A, InfP, dimsA);   //set random (sparce) data to host memory
-  printf("set data of matrix B");
-  ConstantInitRand(h_B, InfP, dimsB);
+  printf("set data of matrix A\n");
+  ConstantInitRand(h_A, InfP, ZeroP, dimsA);   //set random (sparce) data to host memory
+  printf("set data of matrix B\n");
+  ConstantInitRand(h_B, InfP, ZeroP, dimsB);
 
 
-  InfInit(h_infA, size_infA, INF);  //init inf check matrix
-  InfInit(h_infB, size_infB, INF);
+  InfInit(h_infA, size_infA, 0);  //init inf check matrix
+  InfInit(h_infB, size_infB, 0);
 
   skipcounter[0] = 0;   //for debug
   skipcounter[1] = 0;
@@ -716,6 +992,21 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
               checkCudaErrors(cudaEventRecord(stopB, stream));
               checkCudaErrors(cudaEventRecord(startA, stream));
               MinPlusTropSkip
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
+          }
+      }
+      else{
+          for (int j = 0; j < nIter; j++) {
+              checkCudaErrors(cudaEventRecord(startB, stream));
+              InfCheck
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
+              checkCudaErrors(cudaDeviceSynchronize());
+              ZeroCheck
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
+              checkCudaErrors(cudaDeviceSynchronize());
+              checkCudaErrors(cudaEventRecord(stopB, stream));
+              checkCudaErrors(cudaEventRecord(startA, stream));
+              MinPlusTropZeroSkip2
                   << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
           }
       }
@@ -964,7 +1255,7 @@ int main(int argc, char **argv) {
 
   int max_size = 8192;
   
-  int avg_count = 100;
+  int avg_count = 25;
 
 #ifdef DEBUG_COUNT
 
@@ -1002,7 +1293,7 @@ int main(int argc, char **argv) {
   exit(matrix_result);
 
 #else
-  
+  /*
   printf("noskip\n");
 
   for (int size = block_size; size <= max_size; size *= 2) {
@@ -1019,7 +1310,7 @@ int main(int argc, char **argv) {
       writing_file << "\n";
   }
   
-
+  */
   printf("\n\nskip\n");
 
 
@@ -1032,7 +1323,7 @@ int main(int argc, char **argv) {
       printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
           dimsB.y);
       for (int i = 0; i <= avg_count; i++) {
-          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3, ADD_MODE);
+          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, ADD_MODE);
       }
       writing_file << "\n";
   }
