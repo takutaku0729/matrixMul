@@ -35,8 +35,8 @@
 #include <cuda_runtime.h>
 
 // Helper functions and utilities to work with CUDA
-#include <helper_cuda.h>
-#include <helper_functions.h>
+#include "helper_cuda.h"
+#include "helper_functions.h"
 
 #include <random>
 
@@ -47,14 +47,17 @@
 #define ZEROP 50
 #define MODE 4   // tropical = 1, else = 2, infskip = 3, zeroskip = 4
 #define ADD_MODE 1 //1:min-plus 2:max-plus
+#define MAXSIZE 16384
+#define LOOP 100
+
+//zero mode switch
+#define ZEROTILE
 
 //define for switching debug mode
 
 //#define DEBUG_COUNT
 //#define SINGLE
 
-//zero mode switch
-#define ZEROTILE
 
 /**
  * Matrix multiplication (CUDA Kernel) on the device: C = A * B
@@ -292,7 +295,7 @@ __global__ void MinPlusTropSkip(float* C, float* A, float* B, float* infA, float
     C[c + indexConstB] = Csub;
 }
 
-__global__ void MinPlusTropZeroSkip1(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB, int* skipcounter) {
+__global__ void MinPlusTropZeroSkip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB, int* skipcounter) {
     // Block index
     int bx = blockIdx.x;
     int by = blockIdx.y;
@@ -342,114 +345,18 @@ __global__ void MinPlusTropZeroSkip1(float* C, float* A, float* B, float* infA, 
 
 #endif
 
-        //skip execution
-        if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
-            continue;
-        }
-
-        // Declaration of the shared memory array As used to
-        // store the sub-matrix of A
-        __shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
-
-        // Declaration of the shared memory array Bs used to
-        // store the sub-matrix of B
-        __shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
-
-        // Load the matrices from device memory
-        // to shared memory; each thread loads
-        // one element of each matrix
-        As[ty][tx] = A[a + indexConstA];
-        Bs[ty][tx] = B[b + indexConstB];
-
-        // Synchronize to make sure the matrices are loaded
-        __syncthreads();
-
-        // Multiply the two matrices together;
-        // each thread computes one element
-        // of the block sub-matrix
-#pragma unroll
-
-        for (int k = 0; k < BLOCK_SIZE; ++k) {
-            if (Csub >= (As[ty][k] + Bs[k][tx])) {
-                Csub = As[ty][k] + Bs[k][tx];
-                    if (Csub == 0) {
-                        break;
-                    }
-            }
-        }
-
-        // Synchronize to make sure that the preceding
-        // computation is done before loading two new
-        // sub-matrices of A and B in the next iteration
-        __syncthreads();
-    }
-
-    // Write the blocsub-matrix to device memory;
-    // each thread writes one element
-    int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
-    C[c + indexConstB] = Csub;
-
-}
-
-__global__ void MinPlusTropZeroSkip2(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB, int* skipcounter) {
-    // Block index
-    int bx = blockIdx.x;
-    int by = blockIdx.y;
-
-    // Thread index
-    int tx = threadIdx.x;
-    int ty = threadIdx.y;
-
-    // Index of the first sub-matrix of A processed by the block
-    int aBegin = wA * BLOCK_SIZE * by;
-
-    // Index of the last sub-matrix of A processed by the block
-    int aEnd = aBegin + wA - 1;
-
-    // Step size used to iterate through the sub-matrices of A
-    int aStep = BLOCK_SIZE;
-
-    // Index of the first sub-matrix of B processed by the block
-    int bBegin = BLOCK_SIZE * bx;
-
-    // Step size used to iterate through the sub-matrices of B
-    int bStep = BLOCK_SIZE * wB;
-
-    // Csub is used to store the element of the block sub-matrix
-    // that is computed by the thread
-    float Csub = INF;
-
-    int indexConstA = wA * ty + tx;
-    int indexConstB = wB * ty + tx;
-
-    int infIndexConstA = (wA / BLOCK_SIZE) * by;
-    int infIndexConstB = wB / BLOCK_SIZE;
-
-    // Loop over all the sub-matrices of A and B
-    // required to compute the block sub-matrix
-    for (int a = aBegin, b = bBegin, infIndexA = infIndexConstA, infIndexB = bx; a <= aEnd; a += aStep, b += bStep, infIndexA++, infIndexB += infIndexConstB) {
-
-
-#ifdef DEBUG_COUNT
-
-        if (tx == 0 && ty == 0) {
-            atomicAdd(&skipcounter[1], 1);
-            if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
-                atomicAdd(&skipcounter[0], 1);
-            }
-        }
-
-#endif
 
         //skip execution
         if ((infA[infIndexA] == 1) || (infB[infIndexB] == 1)) {
             continue;
         }
 
+#ifdef ZEROTILE
         if ((infA[infIndexA] == -1) && (infB[infIndexB] == -1)) {
             Csub = 0;
             break;
         }
+#endif
 
         // Declaration of the shared memory array As used to
         // store the sub-matrix of A
@@ -476,9 +383,12 @@ __global__ void MinPlusTropZeroSkip2(float* C, float* A, float* B, float* infA, 
         for (int k = 0; k < BLOCK_SIZE; ++k) {
             if (Csub >= (As[ty][k] + Bs[k][tx])) {
                 Csub = As[ty][k] + Bs[k][tx];
+#ifdef ZEROTILE
+#else
                 if (Csub == 0) {
                     break;
                 }
+#endif
             }
         }
 
@@ -894,9 +804,10 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   int InfP = INFP;  //set inf percentage
   int ZeroP = ZEROP;
   
-  printf("set data of matrix A\n");
-  ConstantInitRand(h_A, InfP, ZeroP, dimsA);   //set random (sparce) data to host memory
-  printf("set data of matrix B\n");
+  //set random (sparce) data to host memory
+
+  ConstantInitRand(h_A, InfP, ZeroP, dimsA);
+
   ConstantInitRand(h_B, InfP, ZeroP, dimsB);
 
 
@@ -1006,7 +917,7 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
               checkCudaErrors(cudaDeviceSynchronize());
               checkCudaErrors(cudaEventRecord(stopB, stream));
               checkCudaErrors(cudaEventRecord(startA, stream));
-              MinPlusTropZeroSkip2
+              MinPlusTropZeroSkip
                   << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
           }
       }
@@ -1054,7 +965,7 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   float msecTotal = msecTotalA;
 
  
-  if (mode == 3) {
+  if (mode >= 3) {
       checkCudaErrors(cudaEventElapsedTime(&msecTotalB, startB, stopB));
       msecTotal += msecTotalB;
   }
@@ -1100,29 +1011,6 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
 
 #endif
 
-  /*
-  printf("Checking computed result for correctness: ");
-  bool correct = true;
-
-  // test relative error by the formula
-  //     |<x, y>_cpu - <x,y>_gpu|/<|x|, |y|>  < eps
-  double eps = 1.e-6;  // machine zero
-
-  for (int i = 0; i < static_cast<int>(dimsC.x * dimsC.y); i++) {
-    double abs_err = fabs(h_C[i] - (dimsA.x * valB));
-    double dot_length = dimsA.x;
-    double abs_val = fabs(h_C[i]);
-    double rel_err = abs_err / abs_val / dot_length;
-
-    if (rel_err > eps) {
-      printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n", i,
-             h_C[i], dimsA.x * valB, eps);
-      correct = false;
-    }
-  }*/
-
-  //printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
-
   // Clean up memory
   checkCudaErrors(cudaFreeHost(h_A));
   checkCudaErrors(cudaFreeHost(h_B));
@@ -1139,14 +1027,6 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   checkCudaErrors(cudaEventDestroy(startB));
   checkCudaErrors(cudaEventDestroy(stopB));
 
-
-  /*
-  if (correct) {
-    return EXIT_SUCCESS;
-  } else {
-    return EXIT_FAILURE;
-  }
-  */
 }
 
 /**
@@ -1155,24 +1035,10 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
 int main(int argc, char **argv) {
   printf("[Matrix Multiply Using CUDA] - Starting...\n");
 
-  /*
-  if (checkCmdLineFlag(argc, (const char **)argv, "help") ||
-      checkCmdLineFlag(argc, (const char **)argv, "?")) {
-    printf("Usage -device=n (n >= 0 for deviceID)\n");
-    printf("      -wA=WidthA -hA=HeightA (Width x Height of Matrix A)\n");
-    printf("      -wB=WidthB -hB=HeightB (Width x Height of Matrix B)\n");
-    printf(
-        "  Note: Outer matrix dimensions of A & B matrices"
-        " must be equal.\n");
-
-    exit(EXIT_SUCCESS);
-  }
-  */
-
   int n;    //デバイス数
   checkCudaErrors(cudaGetDeviceCount(&n));
 
-  /*
+  
   for (int i = 0; i < n; ++i) {
       cudaDeviceProp dev;
 
@@ -1204,7 +1070,7 @@ int main(int argc, char **argv) {
       else if (dev.computeMode == cudaComputeModeExclusive) printf("exclusive mode (only one thread will be able to use)\n");
       else if (dev.computeMode == cudaComputeModeProhibited) printf("prohibited mode (no threads can use)\n");
      
-  }*/
+  }
 
   // This will pick the best possible CUDA capable device, otherwise
   // override the device ID based on input provided at the command line
@@ -1217,45 +1083,26 @@ int main(int argc, char **argv) {
   dim3 dimsA(block_num * block_size, block_num * block_size, 1);
   dim3 dimsB(block_num * block_size, block_num * block_size, 1);
 
-  /*
-  // width of Matrix A
-  if (checkCmdLineFlag(argc, (const char **)argv, "wA")) {
-    dimsA.x = getCmdLineArgumentInt(argc, (const char **)argv, "wA");
-  }
-
-  // height of Matrix A
-  if (checkCmdLineFlag(argc, (const char **)argv, "hA")) {
-    dimsA.y = getCmdLineArgumentInt(argc, (const char **)argv, "hA");
-  }
-
-  // width of Matrix B
-  if (checkCmdLineFlag(argc, (const char **)argv, "wB")) {
-    dimsB.x = getCmdLineArgumentInt(argc, (const char **)argv, "wB");
-  }
-
-  // height of Matrix B
-  if (checkCmdLineFlag(argc, (const char **)argv, "hB")) {
-    dimsB.y = getCmdLineArgumentInt(argc, (const char **)argv, "hB");
-  }
-
-  if (dimsA.x != dimsB.y) {
-    printf("Error: outer matrix dimensions must be equal. (%d != %d)\n",
-           dimsA.x, dimsB.y);
-    exit(EXIT_FAILURE);
-  }
-  */
-
   int infp = INFP;
+  int zerop = ZEROP;
+  int mode = MODE;
 
   std::ofstream writing_file;
-  std::string filename = "inf" + std::to_string(infp) + ".csv";
+  std::string filename;
+  if (mode == 4) {
+      filename = "inf" + std::to_string(infp) + "zero" + std::to_string(zerop) + ".csv";
+  }
+  else {
+      filename = "inf" + std::to_string(infp) + ".csv";
+  }
+
   writing_file.open(filename, std::ios::app);
 
   int matrix_result = 0;
 
-  int max_size = 8192;
+  int max_size = MAXSIZE;
   
-  int avg_count = 25;
+  int avg_count = LOOP;
 
 #ifdef DEBUG_COUNT
 
