@@ -43,12 +43,12 @@
 #define INF INFINITY
 #define BLOCK_SIZE 32
 #define BLOCK_NUM 4
-#define INFP 25
-#define ZEROP 50
-#define MODE 4   // tropical = 1, else = 2, infskip = 3, zeroskip = 4
+#define INFP 75
+#define ZEROP 75
+#define MODE 3   // tropical = 1, else = 2, infskip = 3, zeroskip = 4
 #define ADD_MODE 1 //1:min-plus 2:max-plus
 #define MAXSIZE 16384
-#define LOOP 100
+#define LOOP 1
 
 //zero mode switch
 #define ZEROTILE
@@ -253,7 +253,7 @@ __global__ void MinPlusTropSkip(float* C, float* A, float* B, float* infA, float
 #endif
 
         //skip execution
-        if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
+        if ((infA[infIndexA] == 1) || (infB[infIndexB] == 1)) {
             continue;
         }
 
@@ -1026,7 +1026,7 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   checkCudaErrors(cudaEventDestroy(stopA));
   checkCudaErrors(cudaEventDestroy(startB));
   checkCudaErrors(cudaEventDestroy(stopB));
-
+  return 0;
 }
 
 /**
@@ -1072,6 +1072,7 @@ int main(int argc, char **argv) {
      
   }
 
+
   // This will pick the best possible CUDA capable device, otherwise
   // override the device ID based on input provided at the command line
   int dev = findCudaDevice(argc, (const char **)argv);
@@ -1096,7 +1097,7 @@ int main(int argc, char **argv) {
       filename = "inf" + std::to_string(infp) + ".csv";
   }
 
-  writing_file.open(filename, std::ios::app);
+  writing_file.open(filename, std::ios::out);
 
   int matrix_result = 0;
 
@@ -1140,7 +1141,7 @@ int main(int argc, char **argv) {
   exit(matrix_result);
 
 #else
-  /*
+/*  
   printf("noskip\n");
 
   for (int size = block_size; size <= max_size; size *= 2) {
