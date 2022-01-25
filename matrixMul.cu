@@ -769,7 +769,7 @@ void SetFileData(float* data, int size) {
 /**
  * Run a simple test of matrix multiplication using CUDA
  */
-int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
+float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
     const dim3& dimsB, std::ofstream& writing_file, int mode, int addmode) {
   // Allocate host memory for matrices A and B
   unsigned int size_A = dimsA.x * dimsA.y;
@@ -964,12 +964,12 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
 
   float msecTotal = msecTotalA;
 
- 
   if (mode >= 3) {
       checkCudaErrors(cudaEventElapsedTime(&msecTotalB, startB, stopB));
       msecTotal += msecTotalB;
   }
 
+/*
   // Compute and print the performance
   float msecPerMatrixMul = (msecTotal) / nIter;
   double flopsPerMatrixMul = 2.0 * static_cast<double>(dimsA.x) *
@@ -977,10 +977,12 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
                              static_cast<double>(dimsB.x);
   double gigaFlops =
       (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
-  printf(
+  
+    printf(
       "Performance= %.2f GFlop/s, Time = %.3f msec, Size= %.0f Ops,"
       " WorkgroupSize= %u threads/block\n",
       gigaFlops, msecTotalA, flopsPerMatrixMul, block.x * block.y);
+*/
 
   // Copy result from device to host
   checkCudaErrors(
@@ -993,7 +995,7 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
 
 
   //file output
-
+/*
 #ifdef DEBUG_COUNT
 
   writing_file << "," + std::to_string(skipcounter[0] / nIter);
@@ -1003,6 +1005,7 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   writing_file << "," + std::to_string(gigaFlops);
 
 #endif
+*/
 
 #ifdef DEBUG_COUNT
   if(mode == 3){
@@ -1026,7 +1029,7 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   checkCudaErrors(cudaEventDestroy(stopA));
   checkCudaErrors(cudaEventDestroy(startB));
   checkCudaErrors(cudaEventDestroy(stopB));
-  return 0;
+  return msecTotal;
 }
 
 /**
@@ -1035,14 +1038,14 @@ int MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
 int main(int argc, char **argv) {
   printf("[Matrix Multiply Using CUDA] - Starting...\n");
 
-  int n;    //ƒfƒoƒCƒX”
+  int n;    //ï¿½fï¿½oï¿½Cï¿½Xï¿½ï¿½
   checkCudaErrors(cudaGetDeviceCount(&n));
 
   
   for (int i = 0; i < n; ++i) {
       cudaDeviceProp dev;
 
-      // ƒfƒoƒCƒXƒvƒƒpƒeƒBŽæ“¾
+      // ï¿½fï¿½oï¿½Cï¿½Xï¿½vï¿½ï¿½ï¿½pï¿½eï¿½Bï¿½æ“¾
       checkCudaErrors(cudaGetDeviceProperties(&dev, i));
 
       printf("device %d\n", i);
@@ -1088,6 +1091,7 @@ int main(int argc, char **argv) {
   int zerop = ZEROP;
   int mode = MODE;
 
+  /*
   std::ofstream writing_file;
   std::string filename;
   if (mode == 4) {
@@ -1097,9 +1101,11 @@ int main(int argc, char **argv) {
       filename = "inf" + std::to_string(infp) + ".csv";
   }
 
-  writing_file.open(filename, std::ios::out);
 
-  int matrix_result = 0;
+  writing_file.open(filename, std::ios::out);
+*/
+
+  float matrix_result = 0;
 
   int max_size = MAXSIZE;
   
@@ -1111,7 +1117,7 @@ int main(int argc, char **argv) {
 
 
   for (int size = block_size; size <= max_size; size *= 2) {
-      writing_file << "skip-" + std::to_string(size);
+      //writing_file << "skip-" + std::to_string(size);
       dimsA.x = size;
       dimsA.y = size;
       dimsB.x = size;
@@ -1121,7 +1127,7 @@ int main(int argc, char **argv) {
       for (int i = 0; i <= avg_count; i++) {
           matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3, ADD_MODE);
       }
-      writing_file << "\n";
+      //writing_file << "\n";
   }
   exit(matrix_result);
 #endif
@@ -1141,39 +1147,61 @@ int main(int argc, char **argv) {
   exit(matrix_result);
 
 #else
-/*  
+
   printf("noskip\n");
 
   for (int size = block_size; size <= max_size; size *= 2) {
-      writing_file << "noskip-" + std::to_string(size);
+     // writing_file << "noskip-" + std::to_string(size);
       dimsA.x = size;
       dimsA.y = size;
       dimsB.x = size;
       dimsB.y = size;
+      float sum = 0;
       printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
           dimsB.y);
       for (int i = 0; i <= avg_count; i++) {
           matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 1, ADD_MODE);
-      }
-      writing_file << "\n";
+          sum += matrix_result;
+        }
+        float msecPerMatrixMul = sum/avg_count;
+        double flopsPerMatrixMul = 2.0 * static_cast<double>(dimsA.x) *
+                                   static_cast<double>(dimsA.y) *
+                                   static_cast<double>(dimsB.x);
+        double gigaFlops = 
+            (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
+        printf(
+                "Performance= %.2f GFlop/s, Time = %.3f msec, Size= %.0f Ops\n",
+                gigaFlops, msecPerMatrixMul, flopsPerMatrixMul);
+      //writing_file << "\n";
   }
   
-  */
+
   printf("\n\nskip\n");
 
 
   for (int size = block_size; size <= max_size; size *= 2) {
-      writing_file << "skip-" + std::to_string(size);
+      //writing_file << "skip-" + std::to_string(size);
       dimsA.x = size;
       dimsA.y = size;
       dimsB.x = size;
       dimsB.y = size;
+      float sum = 0;
       printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
           dimsB.y);
       for (int i = 0; i <= avg_count; i++) {
           matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, ADD_MODE);
-      }
-      writing_file << "\n";
+          sum += matrix_result;
+        }
+        float msecPerMatrixMul = sum/avg_count;
+        double flopsPerMatrixMul = 2.0 * static_cast<double>(dimsA.x) *
+                                   static_cast<double>(dimsA.y) *
+                                   static_cast<double>(dimsB.x);
+        double gigaFlops = 
+            (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
+        printf(
+                "Performance= %.2f GFlop/s, Time = %.3f msec, Size= %.0f Ops\n",
+                gigaFlops, msecPerMatrixMul, flopsPerMatrixMul);
+      //writing_file << "\n";
   }
   exit(matrix_result);
 #endif
