@@ -42,21 +42,21 @@
 
 #define INF INFINITY
 #define BLOCK_SIZE 32
-#define BLOCK_NUM 4
-#define INFP 75
-#define ZEROP 75
+#define BLOCK_NUM 512
+#define INFP 100
+#define ZEROP 0
 #define MODE 3   // tropical = 1, else = 2, infskip = 3, zeroskip = 4
 #define ADD_MODE 1 //1:min-plus 2:max-plus
 #define MAXSIZE 16384
 #define LOOP 1
 
 //zero mode switch
-#define ZEROTILE
+//#define ZEROTILE
 
 //define for switching debug mode
 
 //#define DEBUG_COUNT
-//#define SINGLE
+#define SINGLE
 
 
 /**
@@ -754,15 +754,19 @@ void SetFileData(float* data, int size) {
         std::getline(ifs, tmp);
     }
 
+    int count = 0;
+
     std::string buf;
     int x,y,value;
     for (int i = 0; i < size*size; i++) {
         ifs >> buf >> x >> y >> value;
         if (x < size && y < size) {
             data[x + y * size] = value;
+            count++;
         }
     }
-
+    count = size*size-count;
+    printf("inf count %d / %d \n",count,size*size);
     ifs.close();
 }
 
@@ -804,23 +808,27 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   int InfP = INFP;  //set inf percentage
   int ZeroP = ZEROP;
   
+#ifdef SINGLE
+  ConstantInit(h_A, size_A, INF);
+  ConstantInit(h_B, size_B, INF);
+  SetFileData(h_A, dimsA.x);    //set file data to host memory
+  SetFileData(h_B, dimsB.x);
+
+  #else
+
   //set random (sparce) data to host memory
 
   ConstantInitRand(h_A, InfP, ZeroP, dimsA);
 
   ConstantInitRand(h_B, InfP, ZeroP, dimsB);
 
+#endif
 
   InfInit(h_infA, size_infA, 0);  //init inf check matrix
   InfInit(h_infB, size_infB, 0);
 
   skipcounter[0] = 0;   //for debug
   skipcounter[1] = 0;
-
-  /*
-  SetFileData(h_A, dimsA.x);    //set file data to host memory
-  SetFileData(h_B, dimsB.x);
-  */
 
   // Allocate device memory
   float* d_A, * d_B, * d_C, * inf_A, * inf_B;
@@ -1091,9 +1099,10 @@ int main(int argc, char **argv) {
   int zerop = ZEROP;
   int mode = MODE;
 
-  /*
+  
   std::ofstream writing_file;
   std::string filename;
+  /*
   if (mode == 4) {
       filename = "inf" + std::to_string(infp) + "zero" + std::to_string(zerop) + ".csv";
   }
@@ -1143,7 +1152,10 @@ int main(int argc, char **argv) {
   dimsB.y = size;
   printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
       dimsB.y);
-  matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, ADD_MODE);
+      printf("noskip\n");
+      matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, 1);
+      printf("skip\n");
+      matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, 3);
   exit(matrix_result);
 
 #else
