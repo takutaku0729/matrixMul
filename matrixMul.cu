@@ -30,6 +30,9 @@
 #include <iostream>
 #include <sstream>
 #include <fstream>
+#include <random>
+#include <unistd.h>
+#include <string>
 
 // CUDA runtime
 #include <cuda_runtime.h>
@@ -38,7 +41,7 @@
 #include "helper_cuda.h"
 #include "helper_functions.h"
 
-#include <random>
+#include "matrixMul.h"
 
 #define INF INFINITY
 #define BLOCK_SIZE 32
@@ -49,14 +52,11 @@
 #define ADD_MODE 1 //1:min-plus 2:max-plus
 #define MAXSIZE 16384
 #define LOOP 1
-
-//zero mode switch
-//#define ZEROTILE
+#define FILENAME USA-road-d.NY.gr
 
 //define for switching debug mode
+//#define DEBUG
 
-//#define DEBUG_COUNT
-#define SINGLE
 
 
 /**
@@ -202,7 +202,7 @@ __global__ void MinPlusTrop(float* C, float* A, float* B, int wA, int wB) {
     C[c + wB * ty + tx] = Csub;
 }
 
-__global__ void MinPlusTropSkip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB ,int* skipcounter) {
+__global__ void MinPlusTropSkip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB) {
     // Block index
     int bx = blockIdx.x;
     int by = blockIdx.y;
@@ -239,19 +239,6 @@ __global__ void MinPlusTropSkip(float* C, float* A, float* B, float* infA, float
     // Loop over all the sub-matrices of A and B
     // required to compute the block sub-matrix
     for (int a = aBegin, b = bBegin, infIndexA = infIndexConstA, infIndexB = bx; a <= aEnd; a += aStep, b += bStep, infIndexA++, infIndexB += infIndexConstB) {
-
-
-#ifdef DEBUG_COUNT
-
-        if (tx == 0 && ty == 0) {
-            atomicAdd(&skipcounter[1], 1);
-            if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
-                atomicAdd(&skipcounter[0], 1);
-            }
-        }
-
-#endif
-
         //skip execution
         if ((infA[infIndexA] == 1) || (infB[infIndexB] == 1)) {
             continue;
@@ -295,7 +282,7 @@ __global__ void MinPlusTropSkip(float* C, float* A, float* B, float* infA, float
     C[c + indexConstB] = Csub;
 }
 
-__global__ void MinPlusTropZeroSkip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB, int* skipcounter) {
+__global__ void MinPlusTropZeroSkip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB) {
     // Block index
     int bx = blockIdx.x;
     int by = blockIdx.y;
@@ -332,31 +319,15 @@ __global__ void MinPlusTropZeroSkip(float* C, float* A, float* B, float* infA, f
     // Loop over all the sub-matrices of A and B
     // required to compute the block sub-matrix
     for (int a = aBegin, b = bBegin, infIndexA = infIndexConstA, infIndexB = bx; a <= aEnd; a += aStep, b += bStep, infIndexA++, infIndexB += infIndexConstB) {
-
-
-#ifdef DEBUG_COUNT
-
-        if (tx == 0 && ty == 0) {
-            atomicAdd(&skipcounter[1], 1);
-            if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
-                atomicAdd(&skipcounter[0], 1);
-            }
-        }
-
-#endif
-
-
         //skip execution
         if ((infA[infIndexA] == 1) || (infB[infIndexB] == 1)) {
             continue;
         }
 
-#ifdef ZEROTILE
         if ((infA[infIndexA] == -1) && (infB[infIndexB] == -1)) {
             Csub = 0;
             break;
         }
-#endif
 
         // Declaration of the shared memory array As used to
         // store the sub-matrix of A
@@ -383,12 +354,9 @@ __global__ void MinPlusTropZeroSkip(float* C, float* A, float* B, float* infA, f
         for (int k = 0; k < BLOCK_SIZE; ++k) {
             if (Csub >= (As[ty][k] + Bs[k][tx])) {
                 Csub = As[ty][k] + Bs[k][tx];
-#ifdef ZEROTILE
-#else
                 if (Csub == 0) {
                     break;
                 }
-#endif
             }
         }
 
@@ -474,7 +442,7 @@ __global__ void MaxPlusTrop(float* C, float* A, float* B, int wA, int wB) {
     C[c + wB * ty + tx] = Csub;
 }
 
-__global__ void MaxPlusTropSkip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB, int* skipcounter) {
+__global__ void MaxPlusTropSkip(float* C, float* A, float* B, float* infA, float* infB, int wA, int wB) {
     // Block index
     int bx = blockIdx.x;
     int by = blockIdx.y;
@@ -514,20 +482,6 @@ __global__ void MaxPlusTropSkip(float* C, float* A, float* B, float* infA, float
         if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
             int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
             C[c + indexConstB] = INF;
-
-
-#ifdef DEBUG_COUNT
-
-            if (tx == 0 && ty == 0) {
-                atomicAdd(&skipcounter[1], 1);
-                if ((isinf(infA[infIndexA]) == 1) || (isinf(infB[infIndexB]) == 1)) {
-                    atomicAdd(&skipcounter[0], 1);
-                }
-            }
-
-#endif
-
-
             return;
         }
     }
@@ -662,114 +616,6 @@ __global__ void ZeroCheck(float* C, float* A, float* B, float* infA, float* infB
     }
 }
 
-
-void ConstantInit(float *data, int size, float val) {
-  for (int i = 0; i < size; i++) {
-    data[i] = val;
-  }
-}
-
-
-
-void ConstantInitRand(float* data, int p, int pz, const dim3& size) {
-    std::random_device rnd;
-    std::mt19937 mt(rnd());
-    std::uniform_int_distribution<> rand100(1, 100);
-   int infcount = 0;
-   int count = 0;
-   for (int y = 0; y < size.y / BLOCK_SIZE; y++) {
-       for (int x = 0; x < size.x / BLOCK_SIZE; x++) {
-           count++;
-           if (rand100(rnd) < p) {
-               for (int sy = 0; sy < BLOCK_SIZE; sy++) {
-                   for (int sx = 0; sx < BLOCK_SIZE; sx++) {
-                       data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = INF;
-                   }
-               }
-               infcount++;
-           }
-           else {
-#ifdef ZEROTILE
-               if (rand100(rnd) < pz) {
-                   for (int sy = 0; sy < BLOCK_SIZE; sy++) {
-                       for (int sx = 0; sx < BLOCK_SIZE; sx++) {
-                           data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = 0;
-                       }
-                   }
-               }
-               else {
-                   for (int sy = 0; sy < BLOCK_SIZE; sy++) {
-                       for (int sx = 0; sx < BLOCK_SIZE; sx++) {
-                           data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = 1;
-                       }
-                   }
-               }
-#else
-               for (int sy = 0; sy < BLOCK_SIZE; sy++) {
-                   for (int sx = 0; sx < BLOCK_SIZE; sx++) {
-                       if (rand100(rnd) < pz) {
-                           data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = 0;
-                       }
-                       else {
-                           data[x * BLOCK_SIZE + y * size.x * BLOCK_SIZE + sx + sy * size.x] = 1;
-                       }
-                   }
-               }
-#endif
-           }
-       }
-   }
-
-   //printf("inf percentage : %d / %d\n", infcount, count);
-
-   /* print data
-    int ex;
-    for (int a = 0; a < size.y; a++) {
-        for (int b = 0; b < size.x; b++) {
-            ex = int(data[a * size.y + b]);
-            printf("%d ", ex);
-        }
-        printf("\n");
-    }
-    */
-}
-
-
-
-void InfInit(float* data, int size, float val) {
-    for (int i = 0; i < size; i++) {
-        data[i] = val;
-    }
-}
-
-void SetFileData(float* data, int size) {
-    std::ifstream ifs("USA-road-d.NY.gr");
-
-    if (!ifs) {
-        std::cout << "Error: file not opened." << std::endl;
-    }
-
-    std::string tmp;
-    for (int i = 0; i < 7; i++) {
-        std::getline(ifs, tmp);
-    }
-
-    int count = 0;
-
-    std::string buf;
-    int x,y,value;
-    for (int i = 0; i < size*size; i++) {
-        ifs >> buf >> x >> y >> value;
-        if (x < size && y < size) {
-            data[x + y * size] = value;
-            count++;
-        }
-    }
-    count = size*size-count;
-    printf("inf count %d / %d \n",count,size*size);
-    ifs.close();
-}
-
 /**
  * Run a simple test of matrix multiplication using CUDA
  */
@@ -792,47 +638,35 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   unsigned int mem_size_infB = sizeof(float) * size_infA;
   float *h_infB;
   checkCudaErrors(cudaMallocHost(&h_infB, mem_size_infB));
-  int *skipcounter;
-  checkCudaErrors(cudaMallocHost(&skipcounter, sizeof(int)*2));
   
   cudaStream_t stream;
 
   // Initialize host memory
 
-  /*
-  const float valB = 0.01f;
-  ConstantInit(h_A, size_A, 1.0f);
-  ConstantInit(h_B, size_B, valB);
-  */
-
   int InfP = INFP;  //set inf percentage
   int ZeroP = ZEROP;
   
-#ifdef SINGLE
+#ifdef DEBUG
   ConstantInit(h_A, size_A, INF);
   ConstantInit(h_B, size_B, INF);
-  SetFileData(h_A, dimsA.x);    //set file data to host memory
-  SetFileData(h_B, dimsB.x);
+  //SetFileData(h_A, dimsA.x);    //set file data to host memory
+  //SetFileData(h_B, dimsB.x);
 
   #else
 
   //set random (sparce) data to host memory
 
-  ConstantInitRand(h_A, InfP, ZeroP, dimsA);
+  ConstantInitRand(h_A, InfP, ZeroP, dimsA, 0);
 
-  ConstantInitRand(h_B, InfP, ZeroP, dimsB);
+  ConstantInitRand(h_B, InfP, ZeroP, dimsB, 0);
 
 #endif
 
-  InfInit(h_infA, size_infA, 0);  //init inf check matrix
-  InfInit(h_infB, size_infB, 0);
-
-  skipcounter[0] = 0;   //for debug
-  skipcounter[1] = 0;
+  ConstantInit(h_infA, size_infA, 0);  //init inf check matrix
+  ConstantInit(h_infB, size_infB, 0);
 
   // Allocate device memory
   float* d_A, * d_B, * d_C, * inf_A, * inf_B;
-  int* d_skipcounter;
 
   // Allocate host matrix C
   dim3 dimsC(dimsB.x, dimsA.y, 1);
@@ -850,7 +684,6 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_C), mem_size_C));
   checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&inf_A), mem_size_infA));
   checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&inf_B), mem_size_infB));
-  checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_skipcounter), sizeof(int)*2));
   // Allocate CUDA events that we'll use for timing
   cudaEvent_t startA, stopA, startB, stopB;
   checkCudaErrors(cudaEventCreate(&startA));
@@ -869,8 +702,6 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
       cudaMemcpyAsync(inf_A, h_infA, mem_size_infA, cudaMemcpyHostToDevice, stream));
   checkCudaErrors(
       cudaMemcpyAsync(inf_B, h_infB, mem_size_infB, cudaMemcpyHostToDevice, stream));
-  checkCudaErrors(
-      cudaMemcpyAsync(d_skipcounter, skipcounter, sizeof(int)*2, cudaMemcpyHostToDevice, stream));
 
   // Setup execution parameters
   dim3 block(block_size, block_size);
@@ -883,9 +714,6 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
 
   // Execute the kernel
   int nIter = 1;
-
-  //printf("mode : %d \n", mode);
-
   
   if (addmode == 1) {
       if (mode == 1) {
@@ -911,7 +739,7 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
               checkCudaErrors(cudaEventRecord(stopB, stream));
               checkCudaErrors(cudaEventRecord(startA, stream));
               MinPlusTropSkip
-                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
           }
       }
       else{
@@ -926,7 +754,7 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
               checkCudaErrors(cudaEventRecord(stopB, stream));
               checkCudaErrors(cudaEventRecord(startA, stream));
               MinPlusTropZeroSkip
-                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
           }
       }
   }
@@ -955,7 +783,7 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
               checkCudaErrors(cudaEventRecord(stopB, stream));
               checkCudaErrors(cudaEventRecord(stopB, stream));
               MaxPlusTropSkip
-                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x, d_skipcounter);
+                  << <grid, block, 0, stream >> > (d_C, d_A, d_B, inf_A, inf_B, dimsA.x, dimsB.x);
           }
       }
   }
@@ -977,50 +805,12 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
       msecTotal += msecTotalB;
   }
 
-/*
-  // Compute and print the performance
-  float msecPerMatrixMul = (msecTotal) / nIter;
-  double flopsPerMatrixMul = 2.0 * static_cast<double>(dimsA.x) *
-                             static_cast<double>(dimsA.y) *
-                             static_cast<double>(dimsB.x);
-  double gigaFlops =
-      (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
-  
-    printf(
-      "Performance= %.2f GFlop/s, Time = %.3f msec, Size= %.0f Ops,"
-      " WorkgroupSize= %u threads/block\n",
-      gigaFlops, msecTotalA, flopsPerMatrixMul, block.x * block.y);
-*/
-
   // Copy result from device to host
   checkCudaErrors(
       cudaMemcpyAsync(h_C, d_C, mem_size_C, cudaMemcpyDeviceToHost, stream));
   checkCudaErrors(
       cudaMemcpyAsync(h_infA, inf_A, mem_size_infA, cudaMemcpyDeviceToHost, stream));
-  checkCudaErrors(
-      cudaMemcpyAsync(skipcounter, d_skipcounter, sizeof(int)*2, cudaMemcpyDeviceToHost, stream));
   checkCudaErrors(cudaStreamSynchronize(stream));
-
-
-  //file output
-/*
-#ifdef DEBUG_COUNT
-
-  writing_file << "," + std::to_string(skipcounter[0] / nIter);
-
-#else
-
-  writing_file << "," + std::to_string(gigaFlops);
-
-#endif
-*/
-
-#ifdef DEBUG_COUNT
-  if(mode == 3){
-          printf("skipcount = %d / %d\n\n", skipcounter[0] / nIter, skipcounter[1] / nIter);
-  }
-
-#endif
 
   // Clean up memory
   checkCudaErrors(cudaFreeHost(h_A));
@@ -1031,12 +821,11 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
   checkCudaErrors(cudaFree(d_C));
   checkCudaErrors(cudaFree(inf_B));
   checkCudaErrors(cudaFree(inf_A));
-  checkCudaErrors(cudaFreeHost(skipcounter));
-  checkCudaErrors(cudaFree(d_skipcounter));
   checkCudaErrors(cudaEventDestroy(startA));
   checkCudaErrors(cudaEventDestroy(stopA));
   checkCudaErrors(cudaEventDestroy(startB));
   checkCudaErrors(cudaEventDestroy(stopB));
+
   return msecTotal;
 }
 
@@ -1044,178 +833,151 @@ float MatrixMultiply(int argc, char** argv, int block_size, const dim3& dimsA,
  * Program main
  */
 int main(int argc, char **argv) {
-  printf("[Matrix Multiply Using CUDA] - Starting...\n");
 
-  int n;    //�f�o�C�X��
-  checkCudaErrors(cudaGetDeviceCount(&n));
+    int infp = INFP;
+    int zerop = ZEROP;
+    int mode = MODE;
+    int addmode = ADD_MODE;
 
-  
-  for (int i = 0; i < n; ++i) {
-      cudaDeviceProp dev;
+    float matrix_result = 0;
+    int max_size = MAXSIZE;
+    int avg_count = LOOP;
 
-      // �f�o�C�X�v���p�e�B�擾
-      checkCudaErrors(cudaGetDeviceProperties(&dev, i));
+    int opt;
 
-      printf("device %d\n", i);
-      printf(" device name : %s\n", dev.name);
-      printf(" total global memory : %d (MB)\n", dev.totalGlobalMem / 1024 / 1024);
-      printf(" shared memory / block : %d (KB)\n", dev.sharedMemPerBlock / 1024);
-      printf(" register / block : %d\n", dev.regsPerBlock);
-      printf(" warp size : %d\n", dev.warpSize);
-      printf(" max pitch : %d (B)\n", dev.memPitch);
-      printf(" max threads / block : %d\n", dev.maxThreadsPerBlock);
-      printf(" max size of each dim. of block : (%d, %d, %d)\n", dev.maxThreadsDim[0], dev.maxThreadsDim[1], dev.maxThreadsDim[2]);
-      printf(" max size of each dim. of grid  : (%d, %d, %d)\n", dev.maxGridSize[0], dev.maxGridSize[1], dev.maxGridSize[2]);
-      printf(" clock rate : %d (MHz)\n", dev.clockRate / 1000);
-      printf(" total constant memory : %d (KB)\n", dev.totalConstMem / 1024);
-      printf(" compute capability : %d.%d\n", dev.major, dev.minor);
-      printf(" alignment requirement for texture : %d\n", dev.textureAlignment);
-      printf(" device overlap : %s\n", (dev.deviceOverlap ? "ok" : "not"));
-      printf(" num. of multiprocessors : %d\n", dev.multiProcessorCount);
-      printf(" kernel execution timeout : %s\n", (dev.kernelExecTimeoutEnabled ? "on" : "off"));
-      printf(" integrated : %s\n", (dev.integrated ? "on" : "off"));
-      printf(" host memory mapping : %s\n", (dev.canMapHostMemory ? "on" : "off"));
+    // getopt 
 
-      printf(" compute mode : ");
-      if (dev.computeMode == cudaComputeModeDefault) printf("default mode (multiple threads can use) \n");
-      else if (dev.computeMode == cudaComputeModeExclusive) printf("exclusive mode (only one thread will be able to use)\n");
-      else if (dev.computeMode == cudaComputeModeProhibited) printf("prohibited mode (no threads can use)\n");
-     
-  }
+    opterr = 0;
+    while ((opt = getopt(argc, argv, "m:s:i:z:l:")) != -1){
+        switch(opt){
+            case 'm':
+                mode = stoi(optarg);
+                break;
+            
+            case 's':
+                max_size = stoi(optarg);
+                break;
+            
+            case 'i':
+                infp = stoi(optarg);
+                break;
+            
+            case 'z':
+                zerop = stoi(optarg);
+                break;
+            
+            case 'l':
+                avg_count = stoi(optarg);
+                break;
 
-
-  // This will pick the best possible CUDA capable device, otherwise
-  // override the device ID based on input provided at the command line
-  int dev = findCudaDevice(argc, (const char **)argv);
-
-  int block_size = BLOCK_SIZE;
-
-  int block_num = BLOCK_NUM;
-
-  dim3 dimsA(block_num * block_size, block_num * block_size, 1);
-  dim3 dimsB(block_num * block_size, block_num * block_size, 1);
-
-  int infp = INFP;
-  int zerop = ZEROP;
-  int mode = MODE;
-
-  
-  std::ofstream writing_file;
-  std::string filename;
-  /*
-  if (mode == 4) {
-      filename = "inf" + std::to_string(infp) + "zero" + std::to_string(zerop) + ".csv";
-  }
-  else {
-      filename = "inf" + std::to_string(infp) + ".csv";
-  }
-
-
-  writing_file.open(filename, std::ios::out);
-*/
-
-  float matrix_result = 0;
-
-  int max_size = MAXSIZE;
-  
-  int avg_count = LOOP;
-
-#ifdef DEBUG_COUNT
-
-  printf("\n\nskipcount\n");
-
-
-  for (int size = block_size; size <= max_size; size *= 2) {
-      //writing_file << "skip-" + std::to_string(size);
-      dimsA.x = size;
-      dimsA.y = size;
-      dimsB.x = size;
-      dimsB.y = size;
-      printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
-          dimsB.y);
-      for (int i = 0; i <= avg_count; i++) {
-          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 3, ADD_MODE);
-      }
-      //writing_file << "\n";
-  }
-  exit(matrix_result);
-#endif
-
-
-
-#ifdef SINGLE
-
-  int size = block_size * block_num;
-  dimsA.x = size;
-  dimsA.y = size;
-  dimsB.x = size;
-  dimsB.y = size;
-  printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
-      dimsB.y);
-      printf("noskip\n");
-      matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, 1);
-      printf("skip\n");
-      matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, 3);
-  exit(matrix_result);
-
-#else
-
-  printf("noskip\n");
-
-  for (int size = block_size; size <= max_size; size *= 2) {
-     // writing_file << "noskip-" + std::to_string(size);
-      dimsA.x = size;
-      dimsA.y = size;
-      dimsB.x = size;
-      dimsB.y = size;
-      float sum = 0;
-      printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
-          dimsB.y);
-      for (int i = 0; i <= avg_count; i++) {
-          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 1, ADD_MODE);
-          sum += matrix_result;
+            default:
+                printf("unknown option\n");
+                break;
         }
-        float msecPerMatrixMul = sum/avg_count;
+    }
+
+    printf("[Matrix Multiply Using CUDA] - Starting...\n");
+
+    // This will pick the best possible CUDA capable device, otherwise
+    // override the device ID based on input provided at the command line
+    int dev = findCudaDevice(argc, (const char **)argv);
+
+    int block_size = BLOCK_SIZE;
+
+    int block_num = BLOCK_NUM;
+
+    dim3 dimsA(block_num * block_size, block_num * block_size, 1);
+    dim3 dimsB(block_num * block_size, block_num * block_size, 1);
+
+    #ifdef DEBUG //for debug
+
+    int size = block_size * block_num;
+    dimsA.x = size;
+    dimsA.y = size;
+    dimsB.x = size;
+    dimsB.y = size;
+    printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
+        dimsB.y);
+        matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, ADD_MODE);
+    exit(matrix_result);
+
+
+    #else
+
+
+    std::ofstream writing_file;
+    std::string filename;
+    if (mode == 4) {
+        filename = "inf" + std::to_string(infp) + "zero" + std::to_string(zerop) + ".csv";
+    }
+    else {
+        filename = "inf" + std::to_string(infp) + ".csv";
+    }
+
+    writing_file.open(filename, std::ios::out);
+
+    printf("noskip\n");
+
+    for (int size = block_size; size <= max_size; size *= 2) {
+        writing_file << "noskip-" + std::to_string(size);
+        dimsA.x = size;
+        dimsA.y = size;
+        dimsB.x = size;
+        dimsB.y = size;
+        float sum = 0;
+        float sum_time = 0;
         double flopsPerMatrixMul = 2.0 * static_cast<double>(dimsA.x) *
-                                   static_cast<double>(dimsA.y) *
-                                   static_cast<double>(dimsB.x);
-        double gigaFlops = 
-            (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
-        printf(
-                "Performance= %.2f GFlop/s, Time = %.3f msec, Size= %.0f Ops\n",
-                gigaFlops, msecPerMatrixMul, flopsPerMatrixMul);
-      //writing_file << "\n";
-  }
-  
+        static_cast<double>(dimsA.y) *static_cast<double>(dimsB.x);
 
-  printf("\n\nskip\n");
+        printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
+            dimsB.y);
+        for (int i = 0; i <= avg_count; i++) {
+            matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, 1, addmode);
+            float msecPerMatrixMul = (matrix_result) / nIter;
+            double gigaFlops =
+                (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
+            writing_file << "," + std::to_string(gigaFlops);
+            sum_time += matrix_result;
+            sum += gigaFlops;
+            }
+            printf(
+                    "Performance= %.2f GFlop/s, Time = %.3f msec, Size= %.0f Ops\n",
+                    sum/avg_count, sum_time/avg_count, flopsPerMatrixMul);
+        writing_file << "\n";
+    }
+    
+
+    printf("\n\nskip\n");
 
 
-  for (int size = block_size; size <= max_size; size *= 2) {
-      //writing_file << "skip-" + std::to_string(size);
-      dimsA.x = size;
-      dimsA.y = size;
-      dimsB.x = size;
-      dimsB.y = size;
-      float sum = 0;
-      printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
-          dimsB.y);
-      for (int i = 0; i <= avg_count; i++) {
-          matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, MODE, ADD_MODE);
-          sum += matrix_result;
-        }
-        float msecPerMatrixMul = sum/avg_count;
+    for (int size = block_size; size <= max_size; size *= 2) {
+        writing_file << "skip-" + std::to_string(size);
+        dimsA.x = size;
+        dimsA.y = size;
+        dimsB.x = size;
+        dimsB.y = size;
+        float sum = 0;
+        float sum_time = 0;
         double flopsPerMatrixMul = 2.0 * static_cast<double>(dimsA.x) *
-                                   static_cast<double>(dimsA.y) *
-                                   static_cast<double>(dimsB.x);
-        double gigaFlops = 
-            (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
-        printf(
-                "Performance= %.2f GFlop/s, Time = %.3f msec, Size= %.0f Ops\n",
-                gigaFlops, msecPerMatrixMul, flopsPerMatrixMul);
-      //writing_file << "\n";
-  }
-  exit(matrix_result);
-#endif
+        static_cast<double>(dimsA.y) *static_cast<double>(dimsB.x);
+
+        printf("MatrixA(%d,%d), MatrixB(%d,%d)\n", dimsA.x, dimsA.y, dimsB.x,
+            dimsB.y);
+        for (int i = 0; i <= avg_count; i++) {
+            matrix_result = MatrixMultiply(argc, argv, block_size, dimsA, dimsB, writing_file, mode, addmode);
+            float msecPerMatrixMul = (matrix_result) / nIter;
+            double gigaFlops =
+                (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
+            writing_file << "," + std::to_string(gigaFlops);
+            sum_time += matrix_result;
+            sum += gigaFlops;
+            }
+                printf(
+                    "Performance= %.2f GFlop/s, Time = %.3f msec, Size= %.0f Ops\n",
+                    sum/avg_count, sum_time/avg_count, flopsPerMatrixMul);
+        writing_file << "\n";
+    }
+    exit(matrix_result);
+    #endif
 
 }
